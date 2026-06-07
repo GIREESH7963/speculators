@@ -8,6 +8,12 @@ from huggingface_hub.errors import EntryNotFoundError
 from loguru import logger
 from safetensors import safe_open
 
+_WEIGHT_ALIASES: dict[str, list[str]] = {
+    "embed_tokens.weight": ["tok_embeddings.weight"],
+    "lm_head.weight": ["output.weight"],
+    "model.norm.weight": ["norm.weight"],
+}
+
 
 def load_model_layers(
     layer_names: list[str], model_path: str
@@ -38,7 +44,7 @@ def load_model_layers(
         with safe_open(model_file, framework="pt", device="cpu") as f:
             weight_map = dict.fromkeys(f.keys(), "model.safetensors")
 
-    # Resolve names: try exact match first, then suffix match
+    # Resolve names: try exact match, then suffix match, then known aliases
     name_to_key = {}  # Maps input name to actual checkpoint key
     for name in layer_names:
         if name in weight_map:
@@ -48,7 +54,20 @@ def load_model_layers(
             if matched:
                 name_to_key[name] = matched
             else:
-                logger.error(f"Tensor '{name}' not found in weight_map.")
+                alias_matched = None
+                for alias in _WEIGHT_ALIASES.get(name, []):
+                    if alias in weight_map:
+                        alias_matched = alias
+                        break
+                    alias_matched = next(
+                        (k for k in weight_map if k.endswith(alias)), None
+                    )
+                    if alias_matched:
+                        break
+                if alias_matched:
+                    name_to_key[name] = alias_matched
+                else:
+                    logger.error(f"Tensor '{name}' not found in weight_map.")
 
     # group requested names by shard filename
     shard_to_names: dict[str, list[tuple[str, str]]] = {}
