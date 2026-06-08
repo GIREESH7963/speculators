@@ -21,6 +21,7 @@ from speculators.data_generation.vllm_client import (
 from speculators.model import SpeculatorModel
 from speculators.models.eagle3.data import shift_batch
 from speculators.models.metrics import resolve_loss_fn
+from speculators.models.utils import resolve_target_layer_ids
 from speculators.train.data import (
     ArrowDataset,
     BaseDataset,
@@ -73,6 +74,7 @@ def setup_dataloader(
     num_workers: int = 12,
     prefetch_factor: int = 4,
     preprocess=None,
+    num_target_layers: int = 3,
 ) -> DataLoader:
     """Setup dataloader for training.
     Args:
@@ -101,7 +103,11 @@ def setup_dataloader(
         prefetch_factor=prefetch_factor,
         pin_memory=True,
         collate_fn=create_collate_fn(
-            args.total_seq_len, hidden_size, dataset.hidden_states_dtype, preprocess
+            args.total_seq_len,
+            hidden_size,
+            dataset.hidden_states_dtype,
+            preprocess,
+            num_target_layers=num_target_layers,
         ),
         persistent_workers=True,
     )
@@ -193,9 +199,14 @@ def create_transformer_layer_config(  # noqa: C901
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         if hasattr(verifier_config, "rope_parameters"):
             config.rope_parameters = deepcopy(verifier_config.rope_parameters)
+            # The draft model's apply_rotary_pos_emb applies RoPE to the full
+            # head_dim, so partial_rotary_factor (e.g. Mistral4's 0.5) must be
+            # stripped to avoid a shape mismatch between cos/sin and q/k.
+            config.rope_parameters.pop("partial_rotary_factor", None)
     else:
         if hasattr(verifier_config, "rope_scaling"):
             config.rope_scaling = deepcopy(verifier_config.rope_scaling)
+            config.rope_scaling.pop("partial_rotary_factor", None)
         config.rope_theta = getattr(verifier_config, "rope_theta", 10000.0)
 
     return config
@@ -339,6 +350,11 @@ def main(args: argparse.Namespace):
         )
 
     # Setup dataloaders
+    target_layer_ids = resolve_target_layer_ids(
+        args.target_layer_ids, args.verifier_name_or_path
+    )
+    num_target_layers = len(target_layer_ids)
+
     preprocess = shift_batch if args.speculator_type in ("eagle3", "peagle") else None
 
     noise_transform = AddUniformNoise(std=args.noise_std)
@@ -397,6 +413,7 @@ def main(args: argparse.Namespace):
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         preprocess=preprocess,
+        num_target_layers=num_target_layers,
     )
     val_loader = setup_dataloader(
         val_dataset,
@@ -406,6 +423,7 @@ def main(args: argparse.Namespace):
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         preprocess=preprocess,
+        num_target_layers=num_target_layers,
     )
 
     # Get trainer kwargs from model class

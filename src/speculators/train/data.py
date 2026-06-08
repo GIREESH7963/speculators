@@ -66,22 +66,18 @@ def split_files(datapath: str, ratio: float = 0.9, seed: int = 0):
 StandardizeFnSig = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-def create_empty_sample(hidden_size: int, dtype: torch.dtype = torch.bfloat16):
-    # data structure: {
-    #     "hidden_states": [seq_len, 3 * hidden_size],
-    #     "input_ids": [seq_len],
-    #     "verifier_last_hidden_states": [seq_len, hidden_size],
-    #     "loss_mask": [seq_len],
-    #     "lengths": [1],
-    #     "position_ids": [seq_len],
-    # }
+def create_empty_sample(
+    hidden_size: int,
+    num_target_layers: int = 3,
+    dtype: torch.dtype = torch.bfloat16,
+):
     # Default dtype is bfloat16 to match the hidden_states dtype used downstream.
     # When this fallback is used (e.g. vLLM hidden-state extraction times out and
     # we substitute an empty sample), the implicit float32 placeholders crashed
     # bf16 EAGLE-3 layers (fc, verifier_lm_head) with a dtype mismatch.
 
     return {
-        "hidden_states": torch.empty(0, 3 * hidden_size, dtype=dtype),
+        "hidden_states": torch.empty(0, num_target_layers * hidden_size, dtype=dtype),
         "input_ids": torch.empty(0, dtype=torch.long),
         "verifier_last_hidden_states": torch.empty(0, hidden_size, dtype=dtype),
         "loss_mask": torch.empty(0, dtype=torch.bool),
@@ -115,9 +111,8 @@ def build_client_item(dataset_item: dict) -> ClientItem:
     out_dict = {}
     out_dict["input_ids"] = dataset_item["input_ids"].tolist()
 
-    if "messages" in dataset_item:
-        out_dict["messages"] = dataset_item["messages"]
-
+    # Skip messages to force the Completions API path, which sends raw
+    # token_ids and avoids chat-template re-tokenization mismatches.
     return cast("ClientItem", out_dict)
 
 
@@ -459,6 +454,7 @@ def create_collate_fn(
     hidden_size: int,
     dtype: torch.dtype = torch.bfloat16,
     preprocess: Callable[[BatchType], BatchType] | None = None,
+    num_target_layers: int = 3,
 ):
     def collate_fn(batch: list[BatchType | None]) -> BatchType:
         # Apply per-sample preprocessing and filter failed samples
@@ -470,7 +466,7 @@ def create_collate_fn(
             # Match the configured `dtype` so the placeholder doesn't crash
             # downstream layers loaded at a different precision (e.g. bf16
             # weights vs fp32 default placeholders).
-            batch = [create_empty_sample(hidden_size, dtype=dtype)]
+            batch = [create_empty_sample(hidden_size, num_target_layers, dtype=dtype)]
 
         collated_data = {}
         for key in batch[0]:  # type: ignore[union-attr]
