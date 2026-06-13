@@ -540,7 +540,13 @@ def _preprocess_batch(
         results["seq_len"].append(len(input_ids))
 
         if "messages" in results:
-            results["messages"].append(_adapt_conv_for_vllm(normalized_conv))
+            has_multimodal = any(
+                isinstance(turn["content"], list) for turn in normalized_conv
+            )
+            if has_multimodal:
+                results["messages"].append(_adapt_conv_for_vllm(normalized_conv))
+            else:
+                results["messages"].append(None)
 
     return results
 

@@ -57,7 +57,11 @@ def _parse_sharegpt4v_assistant_content(content: str):
 
 
 def _filter_sharegpt4v_coco(example: dict) -> bool:
-    return example["image"].startswith("coco/")
+    if not example["image"].startswith("coco/"):
+        return False
+    coco_dir = get_coco_dir()
+    image_path = os.path.join(coco_dir, example["image"].removeprefix("coco/"))
+    return os.path.exists(image_path)
 
 
 def _normalize_sharegpt4v_coco(example: dict) -> dict:
@@ -65,14 +69,7 @@ def _normalize_sharegpt4v_coco(example: dict) -> dict:
     image_path = os.path.join(coco_dir, example["image"].removeprefix("coco/"))
 
     if not os.path.exists(image_path):
-        state_str = "set to" if os.getenv("COCO_DIR") else "default"
-
-        raise ValueError(
-            f"No image found at <{image_path}>. "
-            f"Please download COCO 2017 Train Images from "
-            f"<http://images.cocodataset.org/zips/train2017.zip> and place the "
-            f"extracted folder under `COCO_DIR` ({state_str}: `{coco_dir}`)."
-        )
+        raise FileNotFoundError(f"Missing image {image_path} (should have been filtered)")
 
     messages = [
         (
